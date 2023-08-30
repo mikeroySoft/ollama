@@ -822,9 +822,13 @@ func ImportHandler(cmd *cobra.Command, args []string) error {
 	// Open the tarball file
 	tarFile, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to open tar file at %s: %w", filePath, err)
+		log.Fatalf("failed to open tar file at %s: %v", filePath, err)
 	}
-	defer tarFile.Close()
+	defer func() {
+		if err := tarFile.Close(); err != nil {
+			log.Fatalf("failed to close tar file: %v", err)
+		}
+	}()
 
 	// Create a tar reader
 	tarReader := tar.NewReader(tarFile)
@@ -832,7 +836,7 @@ func ImportHandler(cmd *cobra.Command, args []string) error {
 	// Get the home directory
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		log.Fatalf("failed to get home directory: %v", err)
 	}
 
 	// Extract each file from the tarball
@@ -841,7 +845,7 @@ func ImportHandler(cmd *cobra.Command, args []string) error {
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			return fmt.Errorf("failed to read next file from tarball: %w", err)
+			log.Fatalf("failed to read next file from tarball: %v", err)
 		}
 
 		// Derive the file path based on whether the file is a blob or the manifest
@@ -863,21 +867,25 @@ func ImportHandler(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			err = os.MkdirAll(dir, 0755)
 			if err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", dir, err)
+				log.Fatalf("failed to create directory %s: %v", dir, err)
 			}
 		}
 
 		// Create the file
 		file, err := os.Create(filePath)
 		if err != nil {
-			return fmt.Errorf("failed to create file %s: %w", filePath, err)
+			log.Fatalf("failed to create file %s: %v", filePath, err)
 		}
-		defer file.Close()
+		defer func() {
+			if err := file.Close(); err != nil {
+				log.Fatalf("failed to close file: %v", err)
+			}
+		}()
 
 		// Write the file content
 		_, err = io.Copy(file, tarReader)
 		if err != nil {
-			return fmt.Errorf("failed to write file %s: %w", filePath, err)
+			log.Fatalf("failed to write file %s: %v", filePath, err)
 		}
 	}
 
