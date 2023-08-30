@@ -1,18 +1,20 @@
 # Development
 
+- Install cmake or (optionally, required tools for GPUs)
+- run `go generate ./...`
+- run `go build .`
+
 Install required tools:
 
 ```
-brew install go
+brew install go cmake gcc
 ```
 
-Enable CGO:
+Get the required libraries:
 
 ```
-export CGO_ENABLED=1
+go generate ./...
 ```
-
-You will also need a C/C++ compiler such as GCC for MacOS and Linux or Mingw-w64 GCC for Windows.
 
 Then build ollama:
 
@@ -24,21 +26,4 @@ Now you can run `ollama`:
 
 ```
 ./ollama
-```
-
-## Releasing
-
-To release a new version of Ollama you'll need to set some environment variables:
-
-- `GITHUB_TOKEN`: your GitHub token
-- `APPLE_IDENTITY`: the Apple signing identity (macOS only)
-- `APPLE_ID`: your Apple ID
-- `APPLE_PASSWORD`: your Apple ID app-specific password
-- `APPLE_TEAM_ID`: the Apple team ID for the signing identity
-- `TELEMETRY_WRITE_KEY`: segment write key for telemetry
-
-Then run the publish script with the target version:
-
-```
-VERSION=0.0.2 ./scripts/publish.sh
 ```

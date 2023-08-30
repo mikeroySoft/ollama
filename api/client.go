@@ -16,7 +16,7 @@ import (
 	"github.com/jmorganca/ollama/version"
 )
 
-const DefaultHost = "localhost:11434"
+const DefaultHost = "127.0.0.1:11434"
 
 var (
 	envHost = os.Getenv("OLLAMA_HOST")
@@ -29,7 +29,7 @@ type Client struct {
 }
 
 func checkError(resp *http.Response, body []byte) error {
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+	if resp.StatusCode < http.StatusBadRequest {
 		return nil
 	}
 
@@ -165,7 +165,7 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 			return fmt.Errorf(errorResponse.Error)
 		}
 
-		if response.StatusCode >= 400 {
+		if response.StatusCode >= http.StatusBadRequest {
 			return StatusError{
 				StatusCode:   response.StatusCode,
 				Status:       response.Status,
