@@ -23,7 +23,7 @@ Ollama is an open-source tool for running large language models locally. It prov
 - `go run . list` - List installed models
 - `go run . ps` - Show currently loaded models
 - `go run . stop <model>` - Stop a running model
-- `go run . export <model> <path> [--compress]` - Export a model to file/directory
+- `go run . export <model> <path> [--compress]` - Export a model to tar file (uncompressed by default, use --compress for tar.gz)
 - `go run . import <path>` - Import a model from export
 
 ### Upstream Sync (Maintainers)
@@ -98,10 +98,12 @@ Chat templates in `template/` define how conversations are formatted for differe
 The export functionality has been optimized for large models:
 
 **Export (`server/export.go`)**
+- By default creates uncompressed `.tar` files using parallel processing for optimal performance
+- Use `--compress` flag to create compressed `.tar.gz` files (slower but smaller)
+- Format auto-detected from file extension (`.tar.gz`, `.tgz` → compressed)
 - Parallel blob reading with configurable workers (via `OLLAMA_EXPORT_WORKERS`)
 - 64MB buffer sizes for file I/O operations (up from 1MB)
 - Throttled progress updates to reduce overhead
-- Uncompressed tar exports use `exportToTarParallel()` for best performance
 - Alternative streaming export available in `export_streaming.go` for memory-constrained systems
 
 **Import (`server/import.go`)**

@@ -1644,12 +1644,15 @@ func NewCLI() *cobra.Command {
 	exportCmd := &cobra.Command{
 		Use:     "export MODEL DESTINATION",
 		Short:   "Export a model to a file or directory",
-		Long:    `Export a model to a file or directory for sharing or backup purposes.`,
+		Long:    `Export a model to a file or directory for sharing or backup purposes.
+
+By default, exports as an uncompressed tar file (.tar) using parallel processing
+for optimal performance. Use --compress to create a compressed tar.gz file.`,
 		Args:    cobra.ExactArgs(2),
 		PreRunE: checkServerHeartbeat,
 		RunE:    ExportHandler,
 	}
-	exportCmd.Flags().Bool("compress", false, "Compress the export as tar.gz")
+	exportCmd.Flags().Bool("compress", false, "Compress the export as tar.gz (slower but smaller file size)")
 
 	importCmd := &cobra.Command{
 		Use:     "import SOURCE [MODEL_NAME]",
