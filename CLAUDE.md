@@ -23,6 +23,8 @@ Ollama is an open-source tool for running large language models locally. It prov
 - `go run . list` - List installed models
 - `go run . ps` - Show currently loaded models
 - `go run . stop <model>` - Stop a running model
+- `go run . export <model> <path> [--compress]` - Export a model to file/directory
+- `go run . import <path>` - Import a model from export
 
 ### Upstream Sync (Maintainers)
 - `make -f Makefile.sync sync` - Sync with upstream llama.cpp repository
@@ -76,6 +78,7 @@ Environment variables are handled in `envconfig/config.go`:
 - `OLLAMA_MODELS` - Model storage directory  
 - `OLLAMA_NUM_PARALLEL` - Concurrent model limit
 - GPU-specific variables (`CUDA_VISIBLE_DEVICES`, etc.)
+- `OLLAMA_EXPORT_WORKERS` - Number of parallel workers for export (1-16, default: 4)
 
 ### Template System
 
@@ -89,3 +92,18 @@ Chat templates in `template/` define how conversations are formatted for differe
 - The server can run multiple models concurrently based on available memory
 - OpenAI-compatible API endpoints are available at `/v1/` for integration
 - Docker builds are supported with optional GPU acceleration
+
+### Export/Import Performance Optimizations
+
+The export functionality has been optimized for large models:
+
+**Export (`server/export.go`)**
+- Parallel blob reading with configurable workers (via `OLLAMA_EXPORT_WORKERS`)
+- 64MB buffer sizes for file I/O operations (up from 1MB)
+- Throttled progress updates to reduce overhead
+- Uncompressed tar exports use `exportToTarParallel()` for best performance
+- Alternative streaming export available in `export_streaming.go` for memory-constrained systems
+
+**Import (`server/import.go`)**
+- Currently uses 1MB buffers (can be optimized similarly)
+- Tar imports extract to temp files then copy (can be optimized to stream directly)

@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -74,7 +77,8 @@ func ExportModel(req *api.ExportRequest, fn func(api.ProgressResponse)) error {
 	case "dir":
 		return exportToDirectory(req.Path, mp, manifest, metadata, fn, totalSize)
 	case "tar":
-		return exportToTar(req.Path, mp, manifest, metadata, fn, totalSize, false)
+		// Use optimized parallel export for uncompressed tar
+		return exportToTarParallel(req.Path, mp, manifest, metadata, fn, totalSize)
 	case "tar.gz":
 		return exportToTar(req.Path, mp, manifest, metadata, fn, totalSize, true)
 	default:
@@ -219,7 +223,7 @@ func copyBlobToExport(layer Layer, destDir string, fn func(api.ProgressResponse)
 	defer dest.Close()
 
 	// Copy with progress
-	buf := make([]byte, 1024*1024) // 1MB buffer
+	buf := make([]byte, 64*1024*1024) // 64MB buffer
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -284,7 +288,7 @@ func writeBlobToTar(tw *tar.Writer, layer Layer, fn func(api.ProgressResponse), 
 	}
 
 	// Copy with progress
-	buf := make([]byte, 1024*1024) // 1MB buffer
+	buf := make([]byte, 64*1024*1024) // 64MB buffer
 	for {
 		n, err := file.Read(buf)
 		if n > 0 {
@@ -313,4 +317,177 @@ func writeBlobToTar(tw *tar.Writer, layer Layer, fn func(api.ProgressResponse), 
 func (l Layer) GetBlobsPath(digest string) string {
 	dir := envconfig.Models()
 	return filepath.Join(dir, "blobs", fmt.Sprintf("sha256-%s", digest))
+}
+
+// Blob processing result for parallel export
+type blobResult struct {
+	layer    Layer
+	data     []byte
+	size     int64
+	position int
+	err      error
+}
+
+// exportToTarParallel exports model to tar with parallel blob reading
+func exportToTarParallel(destPath string, mp ModelPath, manifest *Manifest, metadata ExportMetadata, fn func(api.ProgressResponse), totalSize int64) error {
+	// Create output file
+	file, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create export file: %w", err)
+	}
+	defer file.Close()
+
+	tarWriter := tar.NewWriter(file)
+	defer tarWriter.Close()
+
+	// Write metadata
+	metadataData, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	if err := writeTarFile(tarWriter, "metadata.json", metadataData); err != nil {
+		return fmt.Errorf("failed to write metadata to tar: %w", err)
+	}
+
+	// Write manifest
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+	if err := writeTarFile(tarWriter, "manifest.json", manifestData); err != nil {
+		return fmt.Errorf("failed to write manifest to tar: %w", err)
+	}
+
+	// Prepare all layers for processing
+	layers := make([]Layer, 0, len(manifest.Layers)+1)
+	if manifest.Config.Digest != "" {
+		layers = append(layers, manifest.Config)
+	}
+	layers = append(layers, manifest.Layers...)
+
+	// Progress tracking
+	var completed atomic.Int64
+	progressMutex := &sync.Mutex{}
+	lastProgressUpdate := time.Now()
+
+	// Worker pool for parallel reading
+	numWorkers := 4 // Default to 4 workers
+	if envWorkers := os.Getenv("OLLAMA_EXPORT_WORKERS"); envWorkers != "" {
+		if n, err := strconv.Atoi(envWorkers); err == nil && n > 0 && n <= 16 {
+			numWorkers = n
+		}
+	}
+	jobs := make(chan int, len(layers))
+	results := make(chan blobResult, len(layers))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				layer := layers[idx]
+				digest := strings.TrimPrefix(layer.Digest, "sha256:")
+				srcPath := layer.GetBlobsPath(digest)
+
+				// Pre-read blob into memory for faster tar writing
+				data, err := os.ReadFile(srcPath)
+				if err != nil {
+					results <- blobResult{layer: layer, position: idx, err: err}
+					continue
+				}
+
+				results <- blobResult{
+					layer:    layer,
+					data:     data,
+					size:     int64(len(data)),
+					position: idx,
+					err:      nil,
+				}
+
+				// Update progress (throttled)
+				progressMutex.Lock()
+				completed.Add(int64(len(data)))
+				if time.Since(lastProgressUpdate) > 100*time.Millisecond {
+					fn(api.ProgressResponse{
+						Status:    fmt.Sprintf("reading %s", layer.Digest[7:19]),
+						Completed: completed.Load(),
+						Total:     totalSize,
+					})
+					lastProgressUpdate = time.Now()
+				}
+				progressMutex.Unlock()
+			}
+		}()
+	}
+
+	// Submit jobs
+	for i := range layers {
+		jobs <- i
+	}
+	close(jobs)
+
+	// Collect results
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect all results
+	resultMap := make(map[int]blobResult)
+	for result := range results {
+		if result.err != nil {
+			return fmt.Errorf("failed to read layer %s: %w", result.layer.Digest, result.err)
+		}
+		resultMap[result.position] = result
+	}
+
+	// Write blobs to tar in order
+	completed.Store(0)
+	for i := range layers {
+		result := resultMap[i]
+		digest := strings.TrimPrefix(result.layer.Digest, "sha256:")
+
+		hdr := &tar.Header{
+			Name: filepath.Join("blobs", fmt.Sprintf("sha256-%s", digest)),
+			Mode: 0644,
+			Size: result.size,
+		}
+		if err := tarWriter.WriteHeader(hdr); err != nil {
+			return err
+		}
+
+		// Write in chunks with progress
+		written := 0
+		chunkSize := 64 * 1024 * 1024 // 64MB chunks
+		for written < len(result.data) {
+			end := written + chunkSize
+			if end > len(result.data) {
+				end = len(result.data)
+			}
+			
+			n, err := tarWriter.Write(result.data[written:end])
+			if err != nil {
+				return fmt.Errorf("failed to write blob to tar: %w", err)
+			}
+			written += n
+			completed.Add(int64(n))
+
+			// Update progress
+			fn(api.ProgressResponse{
+				Status:    fmt.Sprintf("writing %s", result.layer.Digest[7:19]),
+				Completed: completed.Load(),
+				Total:     totalSize,
+			})
+		}
+	}
+
+	fn(api.ProgressResponse{
+		Status:    "export complete",
+		Completed: totalSize,
+		Total:     totalSize,
+	})
+
+	return nil
 }
